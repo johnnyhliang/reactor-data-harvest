@@ -1,0 +1,18 @@
+# Harvested output (large; regenerate with the harvesters) — samples/ is kept
+output/
+output_big/
+output_patents/
+**/pdfs/
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# run logs
+*.log
