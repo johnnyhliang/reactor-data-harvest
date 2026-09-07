@@ -16,3 +16,6 @@ venv/
 
 # run logs
 *.log
+
+# ARC job logs
+arc/logs/
