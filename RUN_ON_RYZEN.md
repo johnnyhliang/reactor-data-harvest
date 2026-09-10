@@ -4,9 +4,13 @@ The Ryzen AI box (128 GB unified memory) runs the whole pipeline start-to-finish
 in one place: internet and GPU on the same machine, root access, no Slurm. This is
 the recommended way to run it.
 
+If the box is brand new, do [Part B](#part-b--provision-the-ryzen-box-from-scratch)
+first (Tailscale access, base packages, AMD GPU/ROCm). If it's already provisioned,
+skip to [Part C](#part-c--run-the-pipeline).
+
 The ARC VPN/SSH section is included first only for the times you *do* want the
 cluster (e.g. a large multi-GPU fine-tuning run). For just harvesting + recaptioning,
-skip straight to [Part B](#part-b--run-the-pipeline-on-the-ryzen-box).
+the Ryzen box is all you need.
 
 ---
 
@@ -57,9 +61,85 @@ Notes / gotchas learned the hard way:
 
 ---
 
-## Part B — Run the pipeline on the Ryzen box
+## Part B — Provision the Ryzen box from scratch
 
-Everything below runs locally. No VPN, no Slurm.
+One-time setup for a fresh machine. Commands are for **Ubuntu/Debian** (the usual
+choice for Strix Halo + ROCm); Fedora equivalents noted in parentheses.
+
+### B1. Reach the box over Tailscale
+
+Your laptop already has Tailscale — this joins the **box** to the same tailnet so
+you can SSH in from anywhere (no port-forwarding, no VPN).
+
+On the Ryzen box (physically, or via its LAN IP once):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh     # works on Ubuntu & Fedora
+sudo tailscale up --ssh                               # --ssh lets you SSH over the tailnet
+```
+
+It prints a `https://login.tailscale.com/...` URL — open it, log in with the
+**same account your laptop uses**, and the box appears in your tailnet. Find its
+name/IP:
+
+```bash
+tailscale status         # note the box's 100.x.y.z address and its machine name
+```
+
+Then from your **laptop**:
+
+```bash
+ssh <boxuser>@<box-tailscale-name>     # e.g. ssh jon@ryzen-ai
+# (tailscale --ssh handles auth; no password/key setup needed if same tailnet owner)
+```
+
+Everything from here runs on the box over that SSH session.
+
+### B2. Base packages
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-pip python3-venv curl
+# Fedora: sudo dnf install -y git python3 python3-pip curl
+```
+
+### B3. AMD GPU acceleration (ROCm) for the Strix Halo iGPU
+
+The Ryzen AI Max+ 395's Radeon 8060S (gfx1151) can run the VLM far faster than
+CPU. Strix Halo iGPU support is recent, so this is the finicky part — if it fights
+you, the **CPU fallback in B4 still works** (just slower; the 128 GB unified memory
+means even 32B models fit).
+
+```bash
+# Add your user to the GPU access groups, then re-login for it to take effect
+sudo usermod -aG render,video $USER
+
+# Install ROCm (needs a recent version for gfx1151 — 6.4+).
+# Follow AMD's current instructions for your Ubuntu release:
+#   https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
+# Typically the amdgpu-install route:
+#   wget https://repo.radeon.com/amdgpu-install/<ver>/ubuntu/<codename>/amdgpu-install_*.deb
+#   sudo apt install -y ./amdgpu-install_*.deb
+#   sudo amdgpu-install --usecase=rocm
+
+# verify the GPU is visible:
+rocminfo | grep -i gfx        # should show gfx1151
+```
+
+If Ollama later doesn't see the iGPU, the common fix is to spoof the arch:
+
+```bash
+export HSA_OVERRIDE_GFX_VERSION=11.0.0     # add to ~/.bashrc if it helps
+```
+
+Ollama ships with ROCm support built in, so once `rocminfo` sees the GPU, Ollama
+uses it automatically (watch for a "using ROCm" line when it starts).
+
+---
+
+## Part C — Run the pipeline
+
+Everything below runs locally on the box. No VPN, no Slurm.
 
 ### 1. Get the code
 
