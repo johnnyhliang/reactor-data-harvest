@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-recaption.py -- Stage 5: filter (plots vs. schematics) + enrich captions with a VLM.
+recaption.py -- Stage 5: filter low-quality figures + enrich captions with a VLM.
 
 The harvester pulls EVERY captioned figure, including data plots/charts and
 tangential site photos. This stage uses a vision-language model to:
@@ -22,8 +22,11 @@ Recommended on the Ryzen box:
     python3 recaption.py --backend ollama --model llama3.2-vision:11b \\
         --in output_big/metadata.jsonl --out output_big/metadata_filtered.jsonl
 
-The run is RESUMABLE: rows already present in --out are skipped, so a slow local
-pass can be stopped and restarted.
+The directory and captions are scanned before a VLM is contacted. Obvious caption
+rejects are cheap; only remaining candidates use the model. Kept rows go to --out,
+while rejects and model failures go to --out.rejected.jsonl. Both files are
+resumable, so a stopped local pass does not repeat completed model calls. Use
+--scan-only to inspect inventory and caption-only rejects without running a model.
 """
 from __future__ import annotations
 
@@ -31,23 +34,45 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
-import requests
+try:
+    import requests
+except ImportError:  # scan-only and caption prefilter do not need network access
+    requests = None
 
-SYSTEM_PROMPT = """You label figures for a nuclear-engineering image dataset used to train a text-to-image model.
-Given a figure image and its original caption, decide if it depicts a PHYSICAL nuclear object worth keeping.
+SYSTEM_PROMPT = """You curate images for a nuclear-energy figure dataset. Be highly selective.
+The preferred image is a photograph of a recognizable nuclear-energy object or
+hardware (fuel, reactor vessel/core, control rods, casks, instruments, or related
+equipment). A schematic is acceptable only when it clearly depicts a meaningful,
+recognizable nuclear engineering concept such as a reactor cross-section or fuel
+assembly. A detailed, labeled nuclear-facility concept may qualify as a separate
+schematic category. Require a clear connection to nuclear energy; do not infer
+relevance from the report topic alone.
 
-KEEP (keep=true): reactor schematics, cross-sections, cutaways, CAD renders, fuel
-assembly/rod/pellet diagrams, cask/vessel/core layouts, component photographs,
-facility layout diagrams.
-DROP (keep=false): line/bar/scatter plots, contour maps of data, histograms,
-tables, pure equations, flow charts, and photos not showing a nuclear component
-(e.g. generic buildings, rail track, aerial site views with no visible hardware).
+DROP (keep=false): every 2D or 3D plot, graph, bar/chart, histogram, contour plot
+or map of values; flow charts and process/data-flow diagrams; tables; equations;
+generic maps, site plans, facility overviews, aerial views, buildings without
+visible relevant hardware; and diagrams that are abstract, cluttered, ambiguous,
+or not meaningful even to a field expert. When uncertain, drop it. Never keep an
+image merely because its caption contains nuclear terminology.
 
 Return STRICT JSON only, no prose:
-{"keep": true|false, "category": "schematic|cutaway|cross_section|cad|component_photo|layout|plot|chart|table|flowchart|other", "caption": "rich 1-2 sentence visually-grounded description; preserve technical terms from the original; describe geometry and viewpoint"}"""
+{"keep": true|false, "category": "component_photo|schematic|cutaway|cross_section|facility_schematic|plot|chart|contour|flowchart|table|other", "caption": "rich 1-2 sentence visually-grounded description; preserve technical terms from the original; describe geometry and viewpoint"}"""
+
+# These words identify obvious non-targets from captions alone, before image bytes
+# are read or a vision model is called. This is intentionally a reject-only pass.
+CAPTION_JUNK_RE = re.compile(
+    r"\b(?:bar\s+charts?|histograms?|contour\s+(?:plots?|maps?)|(?:2|3)[- ]?d\s+plots?|"
+    r"scatter\s+plots?|flow\s*charts?|data\s+flows?|flow\s+diagrams?|"
+    r"map\s+layouts?|maps?\s+of\s+(?:values|data|inventory)|"
+    r"(?:line|area|surface)\s+plot|(?:temperature|burnup|pressure|power)\s+"
+    r"(?:versus|vs\.?|as\s+a\s+function\s+of)|"
+    r"plots?|graphs?|spectra|spectrum|sensitivity|uncertaint(?:y|ies)|"
+    r"dose rates?|reactivit(?:y|ies)|rod worth)\b", re.IGNORECASE
+)
 
 
 def _b64(path: Path) -> str:
@@ -78,6 +103,8 @@ def _parse_json(text: str) -> dict | None:
 # Backends
 # ---------------------------------------------------------------------------
 def ollama_available(host: str) -> bool:
+    if requests is None:
+        return False
     try:
         return requests.get(f"{host}/api/tags", timeout=3).status_code == 200
     except requests.RequestException:
@@ -151,6 +178,34 @@ def already_done(out_path: Path) -> set[str]:
     return done
 
 
+def scan_metadata(inp: Path, root: Path) -> tuple[list[dict], int, int, int]:
+    """Read the directory manifest once and reject missing/obvious junk cheaply."""
+    records = []
+    missing = junk = duplicates = 0
+    seen: set[str] = set()
+    with inp.open(encoding="utf-8") as fin:
+        for line in fin:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            name = rec.get("file_name", "")
+            if name in seen:
+                duplicates += 1
+                continue
+            seen.add(name)
+            image = root / name
+            if not image.is_file():
+                missing += 1
+                continue
+            if CAPTION_JUNK_RE.search(rec.get("text", "")):
+                junk += 1
+                rec["filter_reason"] = "caption_prefilter"
+                records.append((rec, image, False))
+            else:
+                records.append((rec, image, True))
+    return records, missing, junk, duplicates
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="VLM filter + re-caption harvested figures")
     ap.add_argument("--in", dest="inp", type=Path, default=Path("output/metadata.jsonl"))
@@ -163,9 +218,18 @@ def main() -> int:
                     help="ollama model tag, or an anthropic model id (e.g. claude-sonnet-5)")
     ap.add_argument("--ollama-host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     ap.add_argument("--limit", type=int, default=0, help="process at most N rows (0 = all)")
+    ap.add_argument("--scan-only", action="store_true",
+                    help="inventory images and apply caption-only prefilter; never call a VLM")
     args = ap.parse_args()
 
     root = args.root or args.inp.parent
+    records, missing, prefiltered, duplicates = scan_metadata(args.inp, root)
+    candidates = sum(eligible for _, _, eligible in records)
+    print(f"directory scan: {len(records)} unique images, {candidates} candidates, "
+          f"{prefiltered} obvious caption rejects, {missing} missing, {duplicates} duplicates")
+    if args.scan_only:
+        return 0
+
     backend = resolve_backend(args.backend, args.ollama_host)
     print(f"backend: {backend}"
           + (f"  model: {args.model}" if backend != "passthrough" else "")
@@ -178,19 +242,23 @@ def main() -> int:
     if done:
         print(f"  resuming: {len(done)} rows already in {args.out}")
 
+    rejects_path = args.out.with_suffix(args.out.suffix + ".rejected.jsonl")
+    done.update(already_done(rejects_path))
     kept = dropped = failed = 0
     cats: dict[str, int] = {}
     mode = "a" if done else "w"
-    with args.inp.open() as fin, args.out.open(mode) as fout:
-        for n, line in enumerate(fin):
+    reject_mode = "a" if done else "w"
+    with args.out.open(mode, encoding="utf-8") as fout, rejects_path.open(reject_mode, encoding="utf-8") as freject:
+        for rec, img, eligible in records:
             if args.limit and (kept + dropped + failed) >= args.limit:
                 break
-            rec = json.loads(line)
             if rec["file_name"] in done:
                 continue
-            img = root / rec["file_name"]
-            if not img.exists():
-                failed += 1
+            if not eligible:
+                freject.write(json.dumps(rec) + "\n")
+                freject.flush()
+                done.add(rec["file_name"])
+                dropped += 1
                 continue
 
             if backend == "passthrough":
@@ -203,20 +271,28 @@ def main() -> int:
             if result is None:              # model/parse failure -> keep, flag for review
                 failed += 1
                 rec["review"] = "vlm_failed"
-                fout.write(json.dumps(rec) + "\n")
-                fout.flush()
+                rec["filter_reason"] = "vlm_failed"
+                freject.write(json.dumps(rec) + "\n")
+                freject.flush()
+                done.add(rec["file_name"])
                 continue
 
             cat = result.get("category", "unknown")
             cats[cat] = cats.get(cat, 0) + 1
             if not result.get("keep"):
                 dropped += 1
+                rec["filter_reason"] = "vlm_rejected"
+                rec["category"] = cat
+                freject.write(json.dumps(rec) + "\n")
+                freject.flush()
+                done.add(rec["file_name"])
                 continue
             rec["text"] = result.get("caption", rec["text"])
             rec["category"] = cat
             rec["caption_source"] = "vlm-enriched"
             fout.write(json.dumps(rec) + "\n")
             fout.flush()                    # resumable: durable after each row
+            done.add(rec["file_name"])
             kept += 1
             if (kept + dropped) % 25 == 0:
                 print(f"  ...{kept} kept / {dropped} dropped")

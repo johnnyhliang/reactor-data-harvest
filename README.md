@@ -25,8 +25,10 @@ OSTI.gov is different and better for this purpose:
 | `harvest_osti.py` | Search OSTI → download full-text PDFs → extract (figure, caption) pairs → HuggingFace imagefolder format | **Working** (986 figures, 12/PDF) |
 | `harvest_patents.py` | Same for US patents (Google Patents, CPC G21C nuclear); parses per-figure descriptions | **Working** (15.7 figs/patent; Google rate-limits rapid runs — has backoff) |
 | `recaption.py` | VLM stage: drop plots/charts, enrich terse captions. Backends: local **ollama** (free), anthropic, or passthrough | **Working**; needs one real run on a GPU/Ryzen box |
+| `review_images.py` | Paginated browser review queue for labeling large image folders without VLM calls | tool |
 | `PIPELINE.md` | Plain-English explanation of how the harvesting works | doc |
 | `WRITEUP.md` | Lab-facing writeup with results + caveats | doc |
+| `samples/` | 10-image visual-culling example, with keep/drop reasons and provisional curated metadata | example |
 | `output_big/`, `output_patents/` | `images/` + `metadata.jsonl` — the paper's fine-tuning format | generated |
 
 New to this? Read **`PIPELINE.md`** first — it explains, from scratch, how the code
@@ -40,6 +42,11 @@ python3 harvest_osti.py --queries "PWR fuel assembly" "reactor core cross sectio
 # then (optional) filter + enrich:
 export ANTHROPIC_API_KEY=...        # optional; without it, passthrough mode
 python3 recaption.py --in output/metadata.jsonl --out output/metadata_filtered.jsonl
+# cheap inventory + caption-only prefilter (no VLM calls):
+python3 recaption.py --in output/metadata.jsonl --out output/metadata_filtered.jsonl --scan-only
+# review candidate images without VLM calls, then apply exported decisions:
+python3 review_images.py --in output/metadata.jsonl --root output --out review.html
+python3 review_images.py --in output/metadata.jsonl --apply review-decisions.jsonl --out output/metadata_curated.jsonl
 ```
 
 Load downstream exactly like the paper's data:
@@ -54,8 +61,8 @@ ds = load_dataset("imagefolder", data_dir="output")
 - **155 captioned figures** extracted (~11/PDF)
 - Manual spot-check: clean labeled reactor-core cross-sections, spent-fuel
   facility layouts, cutaways — the exact "nuclear schematic" class the paper wants
-- Mixed in: data plots (temperature/burnup curves) — these are what `recaption.py`
-  is meant to filter out downstream
+- Mixed in: data plots, flow diagrams, and irrelevant figures — `recaption.py`
+  runs a cheap caption prefilter before asking a VLM to judge remaining images
 
 ## Honest limitations
 

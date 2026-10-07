@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Nuclear image review</title>
+<style>
+body{font:16px system-ui,sans-serif;margin:1rem auto;max-width:1200px;padding:0 1rem;background:#f6f7f8;color:#18212b}
+header{position:sticky;top:0;background:#f6f7f8;padding:.7rem 0;border-bottom:1px solid #ccd2d8;z-index:2}
+.toolbar{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}.toolbar button{padding:.5rem .8rem}
+#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin:1rem 0}
+article{background:white;border:2px solid #d5dbe1;border-radius:8px;padding:.7rem;min-width:0}
+article[data-vote="photo"],article[data-vote="schematic"]{border-color:#28905a}article[data-vote="drop"]{border-color:#c54444}
+img{width:100%;height:210px;object-fit:contain;background:#e8ebee}h3{font-size:.9rem;overflow-wrap:anywhere;margin:.45rem 0}
+.caption{font-size:.83rem;max-height:5.5em;overflow:auto;color:#3e4b58}.buttons{display:flex;gap:.35rem;margin-top:.6rem;flex-wrap:wrap}
+.buttons button{flex:1;padding:.45rem .2rem}button.active{background:#243b53;color:white}small{color:#5c6975}
+</style>
+<header><div class="toolbar"><strong>Image review</strong><span id="status"></span>
+<button id="prev">Previous</button><span id="page"></span><button id="next">Next</button>
+<label>Per page <select id="size"><option>30</option><option selected>50</option><option>100</option></select></label>
+<button id="export">Download decisions JSONL</button><button id="clear">Clear votes</button></div>
+<p>Label only recognizable nuclear hardware photos or clear, meaningful engineering schematics. Drop plots, contour/data maps, flow diagrams, irrelevant images, damaged extracts, and exact duplicates. A detailed facility concept can be marked schematic. Download decisions before closing as a portable backup.</p></header>
+<main id="cards"></main>
+<script>
+const items=[{"file_name": "sample_00.png", "image_url": "sample_00.png", "caption": "Figure 1. Cross-sectional views of the baseline BWR FA Serpent model in different axial zones.", "source": "", "source_id": "3375250", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_01.jpeg", "image_url": "sample_01.jpeg", "caption": "Figure 2. Cross-sectional view of the BWR FA Serpent model with LLFP targets installed.", "source": "", "source_id": "3375250", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_02.png", "image_url": "sample_02.png", "caption": "Figure 3. The (a) x-y and (b) x-z cross-sectional views of the baseline ARC Serpent model.", "source": "", "source_id": "3375250", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_03.jpeg", "image_url": "sample_03.jpeg", "caption": "FIGURE 1 A GNF2 10 × 10 assembly. This diagram is illustrative only and is not to scale.", "source": "", "source_id": "3384956", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_04.jpeg", "image_url": "sample_04.jpeg", "caption": "Fig. 1. Overview of the data flows among the UDB and standards, GC-859, and CURIE.", "source": "", "source_id": "3409955", "auto_drop": true, "auto_reason": "caption_prefilter", "duplicate_of": ""}, {"file_name": "sample_05.jpeg", "image_url": "sample_05.jpeg", "caption": "Fig. 3. Map layout total MTHM in storage per state. Users can select any year between 1968 and 2081. Displayed data are for 2026.", "source": "", "source_id": "3409955", "auto_drop": true, "auto_reason": "caption_prefilter", "duplicate_of": ""}, {"file_name": "sample_06.jpeg", "image_url": "sample_06.jpeg", "caption": "Fig. 4. Conceptual federal staging facility design [9].", "source": "", "source_id": "3409955", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_07.png", "image_url": "sample_07.png", "caption": "Figure 2-10. Side View of TRACE Geometric Representation of the Down-Scaled Canister", "source": "", "source_id": "3362925", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_08.png", "image_url": "sample_08.png", "caption": "Figure 2-17. Side View of TRACE Geometric Representation of the Full MPC-32 Canister", "source": "", "source_id": "3362925", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}, {"file_name": "sample_09.jpeg", "image_url": "sample_09.jpeg", "caption": "Figure 3-3. Paraview Visual z-Normal View of the Repository Showing", "source": "", "source_id": "3362925", "auto_drop": false, "auto_reason": "", "duplicate_of": ""}], key="nuclear-image-review-v1:"+location.pathname;
+let votes={};try{votes=JSON.parse(localStorage.getItem(key)||"{}")}catch{}
+let page=0, size=50;
+const el=id=>document.getElementById(id);
+function save(){try{localStorage.setItem(key,JSON.stringify(votes))}catch{}render()}
+function render(){size=Number(el("size").value);const pages=Math.max(1,Math.ceil(items.length/size));page=Math.max(0,Math.min(page,pages-1));
+ const start=page*size, batch=items.slice(start,start+size); el("page").textContent=`${page+1} / ${pages} (${items.length} images)`;
+ el("status").textContent=`${Object.keys(votes).length} labeled; ${items.filter(x=>x.auto_drop).length} items auto-rejected`;
+ el("prev").disabled=page===0;el("next").disabled=page>=pages-1;
+ el("cards").innerHTML="";
+ for(const [j,x] of batch.entries()){const old=votes[x.file_name]||{};const vote=old.verdict||(x.auto_drop?"drop":"");const card=document.createElement("article");card.dataset.vote=vote;
+ const img=document.createElement("img");img.loading="lazy";img.src=x.image_url;img.alt=x.file_name;img.onerror=()=>{img.alt="Image missing: "+x.file_name};card.append(img);
+ const h=document.createElement("h3");h.textContent=`${start+j+1}. ${x.file_name}`;card.append(h);
+ const source=document.createElement("small");source.textContent=[x.source,x.source_id,x.duplicate_of?"exact duplicate of "+x.duplicate_of:""].filter(Boolean).join(" · ");card.append(source);
+ const cap=document.createElement("div");cap.className="caption";cap.textContent=x.caption;card.append(cap);
+ const row=document.createElement("div");row.className="buttons";
+ for(const [v,label] of [["photo","Keep photo"],["schematic","Keep schematic"],["drop","Drop"],["unsure","Unsure"]]){const b=document.createElement("button");b.textContent=label;if(vote===v)b.className="active";b.onclick=()=>{votes[x.file_name]={verdict:v,category:v==="photo"?"component_photo":v==="schematic"?"schematic":"",reason:v==="drop"?(x.auto_reason||"visual_review"):"visual_review"};save()};row.append(b)}card.append(row);el("cards").append(card);
+ }}
+el("prev").onclick=()=>{page--;render()};el("next").onclick=()=>{page++;render()};el("size").onchange=()=>{page=0;render()};
+el("clear").onclick=()=>{if(confirm("Clear every saved vote?")){votes={};save()}};
+el("export").onclick=()=>{const rows=items.map(x=>{const v=votes[x.file_name]||{verdict:x.auto_drop?"drop":"unsure",category:"",reason:x.auto_reason||"not_reviewed"};return JSON.stringify({file_name:x.file_name,...v})});const blob=new Blob([rows.join("\n")+"\n"],{type:"application/x-ndjson"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="review-decisions.jsonl";a.click();URL.revokeObjectURL(a.href)};
+render();
+</script></html>

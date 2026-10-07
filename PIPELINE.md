@@ -160,9 +160,13 @@ The harvesters keep **every** figure, including data plots/charts we don't want.
 at an image and answer questions about it). For each harvested figure it asks the
 model two things:
 
-1. **Keep or drop?** "Is this a real nuclear object (schematic/photo/cutaway) or a
-   plot/chart/table?" → drops the graphs and tangential photos.
-2. **Better caption.** "Describe what's actually shown." → replaces the terse
+1. **Scan first.** Check which files exist and reject obvious chart, plot, map,
+   and flow-diagram captions without loading a model.
+2. **Keep or drop?** A vision model prefers photographs of recognizable nuclear
+   hardware. It may keep a clear, meaningful engineering schematic, and drops
+   plots, charts, contour figures, flow diagrams, generic facilities, and unclear
+   diagrams.
+3. **Better caption.** "Describe what's actually shown." → replaces the terse
    source caption with a rich one (fixing the paper's "captions too short" gap).
 
 It has three **backends** it auto-detects:
@@ -172,8 +176,9 @@ It has three **backends** it auto-detects:
   copies rows through unchanged so nothing crashes. No filtering happens in this
   mode — it's only a plumbing check.
 
-It writes results after every row, so a slow local run is **resumable** (stop and
-restart without losing progress).
+It writes kept rows and rejected rows after each decision, so a slow local run is
+**resumable** without repeating completed model calls. Use `--scan-only` for a
+directory inventory and caption-only prefilter report before spending model time.
 
 ---
 
